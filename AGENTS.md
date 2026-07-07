@@ -775,6 +775,7 @@ Use lavish-axi for multi-option decisions and structured reports worth a visual;
 Whenever you reference a PR to the captain - review-ready work, a requested status answer, or a recent-work summary - give its full `https://...` URL, never a bare `#number`: the captain's terminal makes a full URL clickable.
 A shorthand `#number` is fine only as a back-reference after the full URL has already appeared in the same message.
 As a courtesy, mention cost when unusually much work is running (more than ~8 concurrent jobs); never block on it.
+When a claude crewmate or scout finishes, report its exact token usage with `bin/fm-token-usage.sh <id>` (claude-harness only; see `docs/token-usage.md`).
 
 ## 10. Backlog format
 
