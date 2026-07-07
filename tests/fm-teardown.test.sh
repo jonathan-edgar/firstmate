@@ -3922,3 +3922,77 @@ test_process_spawned_during_grace_is_reaped_on_later_pass
 test_persistent_scan_refuses_after_bounded_retries
 test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
+
+# --- teardown harvest of crew-generated untracked files ---------------------
+# On a ship teardown, every untracked non-ignored file the crew left is copied
+# into the project's primary checkout (never overwriting) and removed from the
+# worktree, so leftover untracked files no longer refuse teardown and generated
+# work survives the hard-reset. Scout/secondmate worktrees are exempt.
+
+test_harvest_copies_untracked_into_project() {
+  local case_dir rc
+  case_dir=$(make_case harvest-copy)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "shippable work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  printf 'notes\n' > "$case_dir/wt/NOTES.md"
+  mkdir -p "$case_dir/wt/e2e/flows"
+  printf 'flow\n' > "$case_dir/wt/e2e/flows/a.yaml"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "harvest-copy: teardown should succeed (untracked harvested, work landed)"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "harvest-copy: teardown printed REFUSED"
+  assert_present "$case_dir/project/NOTES.md" "harvest-copy: NOTES.md should be copied into project"
+  assert_present "$case_dir/project/e2e/flows/a.yaml" "harvest-copy: nested file should be copied into project"
+  assert_absent "$case_dir/wt/NOTES.md" "harvest-copy: source should be removed from worktree"
+  grep -q "harvest: kept NOTES.md" "$case_dir/stderr" || fail "harvest-copy: should log kept NOTES.md"
+  pass "harvest copies untracked crew files into project and allows an otherwise-dirty teardown"
+}
+
+test_harvest_no_clobber_preserves_existing() {
+  local case_dir rc
+  case_dir=$(make_case harvest-clobber)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "shippable work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  printf 'ORIGINAL\n' > "$case_dir/project/KEEP.md"   # pre-existing at destination
+  printf 'NEW\n' > "$case_dir/wt/KEEP.md"             # crew's untracked version
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "harvest-clobber: teardown should succeed"
+  [ "$(cat "$case_dir/project/KEEP.md")" = "ORIGINAL" ] \
+    || fail "harvest-clobber: existing project file must NOT be overwritten"
+  grep -q "harvest: skip (already at destination) KEEP.md" "$case_dir/stderr" \
+    || fail "harvest-clobber: should log the no-clobber skip"
+  pass "harvest never overwrites an existing project file (no-clobber)"
+}
+
+test_harvest_skipped_for_scout() {
+  local case_dir rc
+  case_dir=$(make_case harvest-scout)
+  write_meta "$case_dir" no-mistakes scout
+  printf 'scratch\n' > "$case_dir/wt/SCRATCH.md"
+
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "harvest-scout: scout teardown should succeed with --force"
+  assert_absent "$case_dir/project/SCRATCH.md" "harvest-scout: scout scratch must NOT be harvested"
+  pass "scout teardown does not harvest (scratch-worktree exemption)"
+}
+
+test_harvest_copies_untracked_into_project
+test_harvest_no_clobber_preserves_existing
+test_harvest_skipped_for_scout

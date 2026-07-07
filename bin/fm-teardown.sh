@@ -66,6 +66,14 @@
 # A gh lookup error falls back to the content check; if that is also inconclusive,
 # teardown refuses rather than risk discarding unlanded work.
 # Uncommitted changes are never landed.
+# Before the safety check and removal, a ship task's worktree is harvested: every
+# untracked, non-ignored file the crew generated is copied into the project's
+# primary checkout (never overwriting an existing path) and then removed from the
+# worktree, so generated notes/docs/scratch survive the hard-reset and the tree is
+# clean for the safety check. This is a captain-requested write into the project
+# (AGENTS.md section 1 write exception); it is purely additive, makes no git-state
+# change, and never touches committed-but-unlanded work (which still refuses). Scout
+# (scratch worktree, report is the deliverable) and secondmate teardowns are exempt.
 # local-only projects additionally accept work merged into the local default
 # branch (firstmate performs that merge after configured approval) as a fallback
 # for the common case where there is no remote at all.
@@ -1777,6 +1785,53 @@ teardown_treehouse_return() {
   return 1
 }
 
+# Harvest crew-generated files before the worktree is destroyed. treehouse return
+# hard-resets the worktree, so any file the crew left untracked - generated notes,
+# docs, scratch outputs - would be lost with the pool slot. Copy every untracked,
+# non-ignored file into the project's primary checkout at the same relative path,
+# then remove it from the worktree so the existing dirty check sees a clean tree and
+# teardown proceeds instead of refusing on the untracked files. Purely additive at
+# the destination: a path that already exists is NEVER overwritten (the worktree
+# copy is dropped with the worktree, exactly as it would be without this feature),
+# and no git-state change is made to either repo. --exclude-standard drops
+# firstmate's own gitignored hook files, so they are never harvested. A file that
+# cannot be copied is left in place, so a copy failure surfaces as the normal
+# dirty-worktree refusal rather than a silent loss. Committed-but-unlanded work is
+# untouched here and still blocks teardown via the landed-work check.
+# This is the captain-requested teardown harvest (AGENTS.md section 1 write
+# exception); it runs for ship tasks only, never for scout (scratch worktree, the
+# report is the deliverable) or secondmate (a home, not a project worktree).
+harvest_untracked_into_project() {
+  local wt=$1 proj=$2 rel src dst copied=0 skipped=0 wt_abs proj_abs
+  [ -n "$wt" ] && [ -d "$wt" ] || return 0
+  [ -n "$proj" ] && [ -d "$proj" ] || return 0
+  wt_abs=$(cd "$wt" 2>/dev/null && pwd -P) || return 0
+  proj_abs=$(cd "$proj" 2>/dev/null && pwd -P) || return 0
+  [ "$wt_abs" != "$proj_abs" ] || return 0
+  git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    src="$wt/$rel"
+    [ -f "$src" ] || continue
+    dst="$proj/$rel"
+    if [ -e "$dst" ]; then
+      skipped=$((skipped + 1))
+      echo "harvest: skip (already at destination) $rel" >&2
+    elif mkdir -p "$(dirname "$dst")" 2>/dev/null && cp "$src" "$dst" 2>/dev/null; then
+      copied=$((copied + 1))
+      echo "harvest: kept $rel" >&2
+    else
+      echo "harvest: could not copy $rel (leaving it in the worktree)" >&2
+      continue
+    fi
+    rm -f "$src" 2>/dev/null || true
+  done < <(git -C "$wt" ls-files --others --exclude-standard 2>/dev/null)
+  if [ "$copied" -gt 0 ] || [ "$skipped" -gt 0 ]; then
+    echo "harvest: $copied file(s) copied into $proj, $skipped already present" >&2
+  fi
+  return 0
+}
+
 validate_worktree_teardown_safety() {
   local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch
   [ -d "$WT" ] || return 0
@@ -3338,6 +3393,17 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] &&
   fi
   require_orca_worktree_path_match "$ORCA_WORKTREE_ID" "$WT" || exit 1
   ORCA_PATH_MATCH_VERIFIED=1
+fi
+
+# Harvest crew-generated untracked files into the project before any safety check
+# or removal, so they survive the worktree being hard-reset. Runs on every ship
+# teardown (including --force) whose recorded slot this teardown still owns; a
+# slot reassigned to another task is never read or touched. Removing the
+# harvested files leaves the worktree clean of non-hook untracked files, so the
+# safety check below no longer refuses on them; committed-but-unlanded work is
+# untouched and still refuses.
+if [ "$KIND" != secondmate ] && [ "$KIND" != scout ] && teardown_owns_worktree; then
+  harvest_untracked_into_project "$WT" "$PROJ"
 fi
 
 if teardown_owns_worktree && [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
