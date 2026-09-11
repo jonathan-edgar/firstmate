@@ -2837,6 +2837,15 @@ real_path_or_raw() { # <path>
 # its --git-common-dir, while an unrelated repo reports its own. That is the
 # property that identifies a real task worktree.
 PROJ_GIT_COMMON=$(git -C "$PROJ_ABS" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+# Fail-open is deliberate (see is_project_worktree), but it must never be
+# silent: without this line an operator on git older than 2.31, where
+# --path-format is unsupported, has no way to know the worktree-identity check
+# is inert until another agent launches somewhere it should not have. Emitted
+# once per spawn, here rather than inside the predicate, because the discovery
+# poll calls it up to FM_SPAWN_WORKTREE_TIMEOUT times.
+if [ -z "$PROJ_GIT_COMMON" ] && [ "$KIND" != secondmate ]; then
+  echo "warning: could not determine the git common dir of $PROJ_ABS (needs git 2.31+ for rev-parse --path-format); the worktree-identity check is DISABLED for this spawn, which proceeds on the isolation check alone" >&2
+fi
 
 # is_project_worktree: true when <path> is a worktree of the SAME repository as
 # the project.
@@ -2857,7 +2866,9 @@ is_project_worktree() {  # <candidate-path>
   # surrounding fleet is zsh and the same helper shape gets copied around.
   local candidate=$1 common
   [ -n "$candidate" ] || return 1
-  [ -n "$PROJ_GIT_COMMON" ] || return 0  # cannot tell; do not block the spawn
+  # cannot tell; do not block the spawn - the condition is reported once at
+  # spawn time where PROJ_GIT_COMMON is resolved.
+  [ -n "$PROJ_GIT_COMMON" ] || return 0
   common=$(git -C "$candidate" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
   [ -n "$common" ] && [ "$common" = "$PROJ_GIT_COMMON" ]
 }
