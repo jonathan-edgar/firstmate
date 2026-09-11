@@ -209,6 +209,11 @@
 #   itself a linked worktree of the project repository still launches. A pane
 #   that never reaches an isolated worktree refuses at the end of that wait,
 #   naming the last path seen and why it was rejected.
+#   Isolation alone is not enough: the path must also be a worktree of that
+#   SAME project (matching --git-common-dir), so an unrelated git repo the pane
+#   transiently sits in can never be mistaken for the task worktree.
+#   FM_SPAWN_WORKTREE_TIMEOUT (default 60) bounds, in seconds, how long the
+#   post-`treehouse get` poll waits for that worktree before giving up.
 #   That placement is proven only at launch. Every ship or scout pane therefore
 #   also receives `export FM_TASK_ID=<task-id>` before the launch command, on
 #   the same channel as GOTMPDIR, and bin/fm-test-run.sh refuses to execute the
@@ -2827,6 +2832,36 @@ real_path_or_raw() { # <path>
   fi
 }
 
+# The project repo's shared git dir. Every linked worktree of this project -
+# which is exactly what `treehouse get` hands out - reports this same path as
+# its --git-common-dir, while an unrelated repo reports its own. That is the
+# property that identifies a real task worktree.
+PROJ_GIT_COMMON=$(git -C "$PROJ_ABS" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+
+# is_project_worktree: true when <path> is a worktree of the SAME repository as
+# the project.
+#
+# Why this exists: the worktree-discovery poll below waits for the pane's
+# foreground cwd to differ from the project, then treats whatever it sees as
+# the task worktree. That is too weak. oh-my-zsh's oh-my-zsh.sh does
+# `builtin cd -q "$ZSH"` on EVERY shell startup to read its revision for the
+# zcompdump stamp, so a freshly spawned pane transiently reports
+# ~/.oh-my-zsh as its foreground cwd. The poll latched onto it and launched
+# the agent there. The old isolation guard passed it too, because ~/.oh-my-zsh
+# IS a git repo and IS not the primary checkout - the guard tested "some other
+# git repo" when it meant "a worktree treehouse gave us".
+is_project_worktree() {  # <candidate-path>
+  # NB: the local is deliberately NOT named `path`. In zsh `path` is tied to
+  # PATH, so `local path=...` empties PATH for the function's scope and every
+  # command lookup inside it fails silently. This script is bash, but the
+  # surrounding fleet is zsh and the same helper shape gets copied around.
+  local candidate=$1 common
+  [ -n "$candidate" ] || return 1
+  [ -n "$PROJ_GIT_COMMON" ] || return 0  # cannot tell; do not block the spawn
+  common=$(git -C "$candidate" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  [ -n "$common" ] && [ "$common" = "$PROJ_GIT_COMMON" ]
+}
+
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
 # a herdr spawn goes through the version-gated, workspace-per-HOME,
@@ -2838,7 +2873,9 @@ real_path_or_raw() { # <path>
 
 # True when <path> is an isolated worktree of the spawning project: a real
 # directory that is its own worktree root, is not the spawning project itself,
-# and does not share the project repository's common git dir. SPAWN_WT_TOP is
+# does not use the project repository's common git dir as its own git dir, and
+# reports that same common git dir as its --git-common-dir (so it belongs to
+# this project and is not some unrelated repo; see is_project_worktree). SPAWN_WT_TOP is
 # left holding the worktree root the check read, and SPAWN_WT_REASON a short
 # phrase naming why a rejected path failed, both for the refusal messages.
 #
@@ -2900,13 +2937,20 @@ spawn_worktree_isolated() { # <path>
     SPAWN_WT_REASON="it is the repository's primary checkout (its git dir is the spawning project's common git dir)"
     return 1
   fi
+  # Being *a* git repo that is not the primary is not enough: it must be a
+  # worktree of THIS project. Without this, any unrelated repo the pane
+  # transiently sits in passes (see is_project_worktree).
+  if ! is_project_worktree "$wt_real"; then
+    SPAWN_WT_REASON="it is a git repo but NOT a worktree of the spawning project (its git common dir is '$(git -C "$wt_real" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo unknown)', expected '$PROJ_GIT_COMMON')"
+    return 1
+  fi
   return 0
 }
 
 validate_spawn_worktree() { # <source> <inspect-target>
   local source=$1 inspect_target=$2
   if ! spawn_worktree_isolated "$WT"; then
-    echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${SPAWN_WT_TOP:-none}'; spawning project '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
+    echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${SPAWN_WT_TOP:-none}'; spawning project '$PROJ_ABS'; ${SPAWN_WT_REASON:-rejected}); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
 }
@@ -3874,10 +3918,14 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # misconfiguration would need machinery this path does not want - so the
   # refusal has to be self-explaining instead: carry the last path seen and the
   # reason it was rejected, and report both at the deadline.
+  # A wrong path is never terminal - it may simply be transient - so the loop
+  # waits it out and FM_SPAWN_WORKTREE_TIMEOUT (default 60) is the only give-up
+  # point.
   candidate=""
   last_seen=""
   last_reason="the pane reported no path"
-  for _ in $(seq 1 60); do
+  SPAWN_WT_TIMEOUT=${FM_SPAWN_WORKTREE_TIMEOUT:-60}
+  for _ in $(seq 1 "$SPAWN_WT_TIMEOUT"); do
     p=$(spawn_current_path "$WT_TARGET" || true)
     [ -z "$p" ] || last_seen="$p"
     if [ -n "$p" ] && spawn_worktree_isolated "$p"; then
@@ -3895,7 +3943,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     sleep 1
   done
   if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter an isolated worktree within 60s (last seen '${last_seen:-none}': $last_reason; spawning project '$PROJ_ABS'); inspect window $T" >&2
+    echo "error: treehouse get did not enter an isolated worktree of $PROJ_ABS within ${SPAWN_WT_TIMEOUT}s (last seen '${last_seen:-none}': $last_reason; spawning project '$PROJ_ABS'); inspect window $T" >&2
     exit 1
   fi
 
