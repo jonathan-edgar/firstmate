@@ -393,6 +393,52 @@ test_spawn_rejects_foreign_repo_cwd() {
   pass "fm-spawn: the worktree poll waits past an unrelated git repo instead of launching in it"
 }
 
+# --- GUARD 1e: the fail-open branch -----------------------------------------
+
+# The identity predicate deliberately fails OPEN: when the project's own
+# --git-common-dir cannot be resolved it never blocks a spawn by itself, and
+# the operator is told on stderr that the check is off. On this base the
+# isolation guard's own unresolved-git-dir rule (spawn_worktree_isolated) then
+# refuses every candidate, genuine worktree or not, so the spawn does not
+# launch; that refusal is the isolation guard's, not the identity check's.
+# Both halves of the identity contract are pinned here: the warning fires, and
+# the reason reported is never the identity predicate's.
+test_spawn_fail_open_when_common_dir_unknown() {
+  local home proj fakebin foreign real_git out status
+  home="$TMP_ROOT/failopen-home"
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/failopen-proj")
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/failopen-fake")
+  fm_test_fake_sleep_noop "$fakebin"
+  foreign=$(make_repo "$TMP_ROOT/failopen-omz")
+  real_git=$(command -v git)
+
+  # Shadow git so only `rev-parse --path-format=...` fails, exactly as a git
+  # older than 2.31 would; every other invocation passes through to real git.
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+set -u
+for arg in "\$@"; do
+  case "\$arg" in
+    --path-format=*) printf 'error: unknown option \`%s'"'"'\n' "\$arg" >&2; exit 129 ;;
+  esac
+done
+exec "$real_git" "\$@"
+SH
+  chmod +x "$fakebin/git"
+
+  out=$(run_spawn "$home" failopen-jj9 "$proj" "$foreign" "$fakebin"); status=$?
+  assert_contains "$out" "worktree-identity check is DISABLED" \
+    "fail-open spawn did not warn that the identity check is off"
+  assert_not_contains "$out" "NOT a worktree of the spawning project" \
+    "the identity predicate must not block when the project's common dir is unknown"
+  expect_code 1 "$status" "the isolation guard's own unresolved-git-dir rule still refuses the spawn"
+  assert_contains "$out" "its git directory could not be resolved" \
+    "the refusal must come from the isolation guard's unresolved-git-dir rule"
+  assert_absent "$home/state/failopen-jj9.meta" "refused spawn must not record meta"
+  pass "fm-spawn: an unresolvable project git common dir disables the identity check loudly and never blocks by itself"
+}
+
 test_lib_classification
 test_guard_banner
 test_bootstrap_line
@@ -400,3 +446,4 @@ test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
 test_spawn_tmux_window_construction
 test_spawn_rejects_foreign_repo_cwd
+test_spawn_fail_open_when_common_dir_unknown

@@ -2838,13 +2838,14 @@ real_path_or_raw() { # <path>
 # property that identifies a real task worktree.
 PROJ_GIT_COMMON=$(git -C "$PROJ_ABS" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
 # Fail-open is deliberate (see is_project_worktree), but it must never be
-# silent: without this line an operator on git older than 2.31, where
-# --path-format is unsupported, has no way to know the worktree-identity check
-# is inert until another agent launches somewhere it should not have. Emitted
-# once per spawn, here rather than inside the predicate, because the discovery
-# poll calls it up to FM_SPAWN_WORKTREE_TIMEOUT times.
+# silent: without this line nothing reveals that the worktree-identity check is
+# inert until another agent launches somewhere it should not have. Any failure
+# of the rev-parse above lands here, so the message names every cause it can
+# have rather than asserting one. Emitted once per spawn, here rather than
+# inside the predicate, because the discovery poll calls it up to
+# FM_SPAWN_WORKTREE_TIMEOUT times.
 if [ -z "$PROJ_GIT_COMMON" ] && [ "$KIND" != secondmate ]; then
-  echo "warning: could not determine the git common dir of $PROJ_ABS (needs git 2.31+ for rev-parse --path-format); the worktree-identity check is DISABLED for this spawn, which proceeds on the isolation check alone" >&2
+  echo "warning: could not determine the git common dir of $PROJ_ABS (git may be missing from PATH, the directory may not be a git repo, git may have refused it over safe.directory ownership, or git may predate 2.31's rev-parse --path-format); the worktree-identity check is DISABLED for this spawn, which proceeds on the isolation check alone" >&2
 fi
 
 # is_project_worktree: true when <path> is a worktree of the SAME repository as
