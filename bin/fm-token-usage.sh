@@ -99,7 +99,16 @@ enc=$(printf '%s' "$CWD" | tr './' '-')
 PROJDIR="$PROJECTS_DIR/$enc"
 [ -d "$PROJDIR" ] || { echo "fm-token-usage.sh: no claude session data for $CWD (looked in $PROJDIR)" >&2; exit 4; }
 
-_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+# Epoch mtime of a file. GNU stat (Linux) is tried first because BSD's
+# "-f <format>" spelling means "--file-system" to GNU stat, which then dumps a
+# whole file-system record instead of failing; BSD stat rejects "-c" cleanly.
+# Anything that is not a bare integer is treated as no reading.
+_mtime() {
+  local m
+  m=$(stat -c %Y "$1" 2>/dev/null) || m=$(stat -f %m "$1" 2>/dev/null) || return 1
+  case $m in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$m"
+}
 
 # Collect the main-session jsonl files that are in scope.
 mains=()
