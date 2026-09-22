@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # Regression tests for the pinned shared no-mistakes gate action.
+#
+# The ref is read out of .github/workflows/no-mistakes-required.yml rather than
+# repeated here, so these tests always exercise the verifier the required check
+# actually runs. A second copy of the pin drifts silently: rolling the workflow
+# to v1.80.1 left this script fetching the previous action, so the tests kept
+# passing against a verifier no PR was ever graded by.
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-ACTION_REF=32d396ac0f29135daf7fcb9964aba9d5f4e796d6
+GATE_WORKFLOW="$ROOT/.github/workflows/no-mistakes-required.yml"
 TMP_ROOT=$(fm_test_tmproot fm-no-mistakes-required)
 VERIFY="$TMP_ROOT/verify.py"
 OLD_SHA=1111111111111111111111111111111111111111
@@ -13,9 +19,28 @@ NEW_SHA=2222222222222222222222222222222222222222
 SIGNATURE='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
 COMPLETED_STEPS='[{"step":"review","status":"completed"},{"step":"test","status":"completed"},{"step":"document","status":"completed"}]'
 
+# Echo the immutable ref the required check is pinned to, resolved from the
+# workflow's parsed step list rather than from how the file happens to be typed.
+resolve_pinned_action_ref() {
+  ruby -ryaml -e '
+doc = YAML.load_file(ARGV[0])
+uses = doc.fetch("jobs").values.flat_map { |job| job.fetch("steps", []) }
+          .map { |step| step["uses"] }.compact
+          .select { |u| u.start_with?("kunchenguid/no-mistakes/.github/actions/require-no-mistakes@") }
+abort "expected exactly one require-no-mistakes step, found #{uses.length}" unless uses.length == 1
+ref = uses.first.split("@", 2).last
+abort "require-no-mistakes must be pinned to a full commit SHA, got #{ref}" unless ref =~ /\A[0-9a-f]{40}\z/
+puts ref
+' "$GATE_WORKFLOW"
+}
+
 fetch_shared_verifier() {
   command -v curl >/dev/null 2>&1 || fail "curl is required to exercise the pinned shared action"
   command -v python3 >/dev/null 2>&1 || fail "python3 is required to exercise the pinned shared action"
+  command -v ruby >/dev/null 2>&1 || fail "ruby is required to parse the required-check workflow as YAML"
+  assert_present "$GATE_WORKFLOW" ".github/workflows/no-mistakes-required.yml is missing"
+  ACTION_REF=$(resolve_pinned_action_ref) \
+    || fail "could not resolve the pinned require-no-mistakes action ref"
   curl --fail --silent --show-error --location \
     "https://raw.githubusercontent.com/kunchenguid/no-mistakes/${ACTION_REF}/.github/actions/require-no-mistakes/verify.py" \
     > "$VERIFY" || fail "could not fetch the pinned shared action verifier"
