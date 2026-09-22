@@ -659,6 +659,41 @@ test_spawn_refuses_orca_nonisolated_worktree() {
   pass "fm-spawn.sh --backend orca: refuses non-isolated worktrees and closes implicit terminals"
 }
 
+test_spawn_refuses_orca_foreign_repo_worktree() {
+  local proj foreign data state config id out status
+  id="orcaforeignz5"
+  proj="$TMP_ROOT/foreign-spawn-project"
+  foreign="$TMP_ROOT/foreign-spawn-other-repo"
+  data="$TMP_ROOT/foreign-spawn-data"
+  state="$TMP_ROOT/foreign-spawn-state"
+  config="$TMP_ROOT/foreign-spawn-config"
+  fm_git_init_commit "$proj"
+  # A separate repository: its own root, not the primary checkout. Under the old
+  # rule ("a git repo whose root is itself and is not the primary") this passed.
+  fm_git_init_commit "$foreign"
+  mkdir -p "$data/$id" "$state" "$config"
+  write_spawn_brief "$data" "$id"
+  touch "$state/.last-watcher-beat"
+  orca_case foreign-spawn
+  printf '1\n' > "$RESP/1.exit"
+  printf '{"ok":true,"result":{"repo":{"id":"repo-foreign"}}}\n' > "$RESP/2.out"
+  printf '{"ok":true,"result":{"worktree":{"id":"wt-foreign","path":"%s"},"terminal":{"handle":"term-foreign"}}}\n' "$foreign" > "$RESP/3.out"
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 \
+    "$ROOT/bin/fm-spawn.sh" "$id" "$proj" claude --mode no-mistakes --yolo off --backend orca 2>&1 )
+  status=$?
+  expect_code 1 "$status" "fm-spawn.sh --backend orca should refuse a worktree from another repository"
+  assert_contains "$out" "NOT a worktree of" \
+    "Orca spawn should name the foreign-repository refusal"
+  assert_absent "$state/$id.meta" "aborted Orca spawn must not record meta"
+  assert_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''close'$'\x1f''--terminal'$'\x1f''term-foreign'$'\x1f''--json' \
+    "Orca spawn should close the implicit terminal after validation aborts"
+  assert_contains "$(cat "$LOG")" $'orca\x1f''worktree'$'\x1f''rm'$'\x1f''--worktree'$'\x1f''id:wt-foreign'$'\x1f''--force'$'\x1f''--json' \
+    "Orca spawn should remove the foreign worktree instead of proceeding to launch in it"
+  pass "fm-spawn.sh --backend orca: refuses a worktree belonging to a different repository"
+}
+
 test_spawn_removes_orca_worktree_when_terminal_create_fails() {
   local proj wt data state config id out status
   id="orcatermfailz8"
@@ -1380,6 +1415,7 @@ test_spawn_writes_orca_metadata_and_launches_harness
 test_spawn_refuses_orca_secondmate_before_home_mutation
 test_spawn_refuses_orca_when_runtime_not_ready
 test_spawn_refuses_orca_nonisolated_worktree
+test_spawn_refuses_orca_foreign_repo_worktree
 test_spawn_removes_orca_worktree_when_terminal_create_fails
 test_spawn_preserves_orca_metadata_when_abort_cleanup_fails
 test_spawn_releases_orca_resources_when_metadata_write_fails

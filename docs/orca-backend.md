@@ -76,6 +76,7 @@ Reinstall the CLI and rerun; [`verification/runtime-backends.md`](verification/r
 - Orca exposes no stable CLI version or protocol marker, so readiness is the compatibility gate rather than a version floor.
 - Only the verified terminal-handle and worktree result fields are accepted; speculative response shapes are rejected.
 - Orca's worktree shape is unverified against the spawn-time Claude workspace-trust check in `bin/fm-claude-trust.sh`, which refuses any path that is not a linked git worktree sharing the project's git common dir, so a claude spawn on Orca fails loudly at that check rather than launching if Orca clones instead of linking.
+- The same shape is a known unknown for every harness at `validate_spawn_worktree`, which requires an Orca-provided worktree to share the project's `--git-common-dir` (the full contract is stated once in `bin/fm-spawn.sh`'s header); that assumes `orca worktree create --repo id:<repo>` yields a linked git worktree of the registered repo, which is NOT smoke-proven. The probe that settles it is `git -C <orca worktree> rev-parse --path-format=absolute --git-common-dir` compared against the same command run in the project directory; if Orca provisions from its own clone or mirror, the correct fix is to give the Orca path its own identity rule rather than to drop the check. The fake-Orca tests feed a hand-built linked worktree, so they pin the predicate's accept and refuse behaviour but cannot confirm the shape real Orca provisions.
 
 ## Regression entry points
 

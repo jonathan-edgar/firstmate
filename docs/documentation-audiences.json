@@ -433,6 +433,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/token-usage.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/trace-context.md",
       "audience": "maintainer-architecture"
     },
